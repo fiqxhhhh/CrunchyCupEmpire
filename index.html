@@ -1712,8 +1712,8 @@
                                     <span class="px-2.5 py-0.5 rounded-full bg-blue-100 text-blue-800 font-extrabold text-[11px]">
                                         <i class="fa-solid fa-envelope mr-1"></i> Rekod Auto Ke: CCempire26@gmail.com
                                     </span>
-                                    <span id="gsheetsConnectionBadge" class="px-2.5 py-0.5 rounded-full bg-green-100 text-green-800 font-extrabold text-[11px]">
-                                        ✅ Google Sheets Disambung Secara Tetap (Live Sync)
+                                    <span id="gsheetsConnectionBadge" class="px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-800 font-extrabold text-[11px]">
+                                        ⏳ Menyambung ke Google Sheets...
                                     </span>
                                 </div>
                                 <h3 class="font-display font-bold text-xl text-brand-brown mt-1.5">
@@ -1739,20 +1739,35 @@
                         <div id="googleSheetsSetupPanel" class="hidden mt-5 pt-5 border-t border-emerald-200 space-y-3">
                             <div class="p-4 rounded-2xl bg-amber-50 border border-amber-300 text-xs text-brand-brown space-y-2">
                                 <div class="flex flex-wrap items-center justify-between gap-2">
-                                    <strong class="text-sm text-brand-brown">📋 Kod Apps Script Pesanan + Menu (kemas kini deployment sedia ada untuk kekalkan URL):</strong>
+                                    <strong class="text-sm text-brand-brown">📋 Kod Apps Script Pesanan + Menu + Chatbot AI (Groq):</strong>
                                     <button type="button" onclick="copyAppsScriptCode()" class="px-3.5 py-1.5 rounded-lg bg-brand-orange text-white font-extrabold text-xs hover:bg-orange-700 transition shadow">
                                         <i class="fa-regular fa-copy mr-1"></i> Salin Kod
                                     </button>
                                 </div>
-                                <textarea id="appsScriptTemplateBox" readonly rows="10" class="w-full p-3 rounded-xl bg-stone-900 text-emerald-300 font-mono text-[11px] leading-relaxed focus:outline-none">var TARGET_RECORD_EMAILS = 'CCempire26@gmail.com, m-8989637@moe-dl.edu.my';
+                                <p class="text-[11px] leading-relaxed text-amber-900">
+                                    Tab pesanan mesti dinamakan <code>CCE_Orders</code>; tab menu <code>CCE_Menu_Config</code> akan dicipta automatik.
+                                    Di Project Settings → Script Properties, tetapkan <code>GROQ_API_KEY</code> dan kata laluan baru yang kuat untuk
+                                    <code>CCE_ADMIN_SYAFIQAH_PASSWORD</code>, <code>CCE_ADMIN_JUJU_PASSWORD</code>,
+                                    <code>CCE_ADMIN_AISYAH_PASSWORD</code> dan <code>CCE_ADMIN_QISTINA_PASSWORD</code>.
+                                    Jangan simpan kunci atau kata laluan dalam HTML. Spreadsheet kekal private; hanya Web App perlu akses Anyone.
+                                    Selepas kemas kini, edit deployment Web App sedia ada supaya URL kekal sama.
+                                </p>
+                                <textarea id="appsScriptTemplateBox" readonly rows="10" class="w-full p-3 rounded-xl bg-stone-900 text-emerald-300 font-mono text-[11px] leading-relaxed focus:outline-none">var SPREADSHEET_ID = '1Z07RcnYcrmPC0ClEjEE0vdhvHpYVcyL80nVWhZbsT4E';
+var ORDERS_SHEET_NAME = 'CCE_Orders';
+var GROQ_MODEL = 'openai/gpt-oss-20b';
+var GROQ_DAILY_REQUEST_LIMIT = 100;
+var PUBLIC_ORDER_DAILY_LIMIT = 100;
+var TARGET_RECORD_EMAILS = 'CCempire26@gmail.com, m-8989637@moe-dl.edu.my';
+
+function getSpreadsheet_() {
+  return SpreadsheetApp.openById(SPREADSHEET_ID);
+}
 
                                 function getMenuConfigSheet_() {
-                                  var ss = SpreadsheetApp.getActiveSpreadsheet();
-                                  var activeSheet = ss.getActiveSheet();
+                                  var ss = getSpreadsheet_();
                                   var sheet = ss.getSheetByName('CCE_Menu_Config');
                                   if (!sheet) {
                                     sheet = ss.insertSheet('CCE_Menu_Config');
-                                    ss.setActiveSheet(activeSheet);
                                   }
                                   if (sheet.getLastRow() === 0) {
                                     sheet.getRange(1, 1, 1, 2).setValues([['Config_Key', 'Config_JSON']]);
@@ -1767,8 +1782,188 @@
                                   };
                                 }
 
+function getOrdersSheet_() {
+  var sheet = getSpreadsheet_().getSheetByName(ORDERS_SHEET_NAME);
+  if (!sheet) sheet = getSpreadsheet_().insertSheet(ORDERS_SHEET_NAME);
+  if (sheet.getLastRow() === 0) {
+    sheet.appendRow(['Order_ID', 'Masa', 'Pelanggan', 'No_Tel', 'Zon', 'Butiran_Pesanan', 'Bil_Cup', 'Jumlah_RM', 'Status', 'Disahkan_Oleh']);
+  }
+  return sheet;
+}
+
+function allowGroqRequest_() {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(5000);
+  try {
+    var properties = PropertiesService.getScriptProperties();
+    var today = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+    var count = properties.getProperty('GROQ_USAGE_DATE') === today
+      ? Number(properties.getProperty('GROQ_USAGE_COUNT')) || 0
+      : 0;
+    if (count >= GROQ_DAILY_REQUEST_LIMIT) return false;
+    properties.setProperties({
+      GROQ_USAGE_DATE: today,
+      GROQ_USAGE_COUNT: String(count + 1)
+    });
+    return true;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function jsonpResponse_(callback, result) {
+  if (!/^cceChat_[A-Za-z0-9_]+$/.test(callback || '')) {
+    return ContentService.createTextOutput(JSON.stringify({ ok: false, error: 'invalid_callback' }))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+  return ContentService.createTextOutput(callback + '(' + JSON.stringify(result) + ');')
+    .setMimeType(ContentService.MimeType.JAVASCRIPT);
+}
+
+function getAdminPassword_(partner) {
+  if (!/^(syafiqah|juju|aisyah|qistina)$/.test(partner || '')) return '';
+  return PropertiesService.getScriptProperties().getProperty('CCE_ADMIN_' + partner.toUpperCase() + '_PASSWORD') || '';
+}
+
+function hashAdminProof_(partner, password, nonce) {
+  var digest = Utilities.computeDigest(
+    Utilities.DigestAlgorithm.SHA_256,
+    partner + '|' + password + '|' + nonce,
+    Utilities.Charset.UTF_8
+  );
+  return Utilities.base64EncodeWebSafe(digest).replace(/=+$/, '');
+}
+
+function adminLoginLocked_(partner) {
+  return Number(CacheService.getScriptCache().get('adminFailures_' + partner) || 0) >= 5;
+}
+
+function recordAdminFailure_(partner) {
+  var cache = CacheService.getScriptCache();
+  var key = 'adminFailures_' + partner;
+  var count = Number(cache.get(key) || 0) + 1;
+  cache.put(key, String(count), 900);
+}
+
+function getAdminSession_(token) {
+  if (!/^[A-Za-z0-9-]{60,80}$/.test(token || '')) return '';
+  return CacheService.getScriptCache().get('adminSession_' + token) || '';
+}
+
+function getOrderRecords_() {
+  var rows = getOrdersSheet_().getDataRange().getValues();
+  var records = [];
+  for (var i = 1; i < rows.length; i++) {
+    if (!rows[i][0]) continue;
+    records.push({
+      id: rows[i][0], time: rows[i][1], customer: rows[i][2], phone: rows[i][3],
+      zone: rows[i][4], itemsSummary: rows[i][5], cupsCount: Number(rows[i][6]) || 0,
+      totalRM: Number(rows[i][7]) || 0, status: rows[i][8] || 'PENDING', verifiedBy: rows[i][9] || ''
+    });
+  }
+  return records;
+}
+
+function getGroqReply_(prompt) {
+  var apiKey = PropertiesService.getScriptProperties().getProperty('GROQ_API_KEY');
+  if (!apiKey) return { ok: false, error: 'ai_not_configured' };
+  if (!allowGroqRequest_()) return { ok: false, error: 'ai_daily_limit' };
+
+  var menuConfig = getMenuConfigSheet_().getRange('B2').getDisplayValue() || '{}';
+  var systemPrompt = 'Anda CrunchyBot, pembantu pelanggan Crunchy Cup Empire. Jawab dalam Bahasa Melayu dengan ringkas dan mesra. '
+    + 'Waktu operasi 12 tengah hari hingga 10 malam. Self-pickup sahaja; COD belum dibuka. '
+    + 'Tiada produk frozen atau penghantaran pos. Lokasi Ipoh: KV Lebuh Cator; hubungi Syafiqah 011-2095 3490, '
+    + 'Aisyah 016-320 1870 atau Qistina 014-622 2305. Selangor: pickup melalui Juju 011-2754 7944. '
+    + 'Harga asal: Chicky 1 pcs RM1.50 atau 6 pcs RM6.50; Maggie 1 pcs RM1.00 atau 6 pcs RM5.50; '
+    + 'Duo 6 pcs RM8.00 termasuk Sos Thai; sos tambahan RM1.00. '
+    + 'Konfigurasi menu dan stok semasa: ' + menuConfig + '. '
+    + 'Jangan mereka-reka harga, stok atau dasar. Jangan minta nombor telefon atau maklumat pembayaran.';
+  try {
+    var response = UrlFetchApp.fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'post',
+      contentType: 'application/json',
+      headers: { Authorization: 'Bearer ' + apiKey },
+      payload: JSON.stringify({
+        model: GROQ_MODEL,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: prompt }
+        ],
+        temperature: 0.3,
+        max_completion_tokens: 400
+      }),
+      muteHttpExceptions: true
+    });
+    if (response.getResponseCode() < 200 || response.getResponseCode() >= 300) {
+      console.error('Groq API returned HTTP ' + response.getResponseCode());
+      return { ok: false, error: 'ai_unavailable' };
+    }
+    var data = JSON.parse(response.getContentText());
+    var reply = data.choices && data.choices[0] && data.choices[0].message
+      ? data.choices[0].message.content
+      : '';
+    if (typeof reply !== 'string' || !reply.trim()) return { ok: false, error: 'ai_empty_reply' };
+    return { ok: true, reply: reply.slice(0, 2000) };
+  } catch (error) {
+    console.error('Groq request failed: ' + error);
+    return { ok: false, error: 'ai_unavailable' };
+  }
+}
+
 function doGet(e) {
-                                  if (e && e.parameter && e.parameter.resource === 'menu') {
+  var parameters = e && e.parameter ? e.parameter : {};
+  var callback = parameters.callback || '';
+  if (parameters.resource === 'chat') {
+    if (!/^cceChat_[A-Za-z0-9_]+$/.test(callback)) {
+      return ContentService.createTextOutput(JSON.stringify({ ok: false, error: 'invalid_callback' }))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+    var prompt = String(parameters.prompt || '').trim();
+    if (!prompt || prompt.length > 1000) {
+      return jsonpResponse_(callback, { ok: false, error: 'invalid_prompt' });
+    }
+    return jsonpResponse_(callback, getGroqReply_(prompt));
+  }
+                                  if (parameters.resource === 'admin_challenge') {
+                                    var partner = String(parameters.partner || '');
+                                    if (!getAdminPassword_(partner) || adminLoginLocked_(partner)) {
+                                      return jsonpResponse_(callback, { ok: false, error: 'login_unavailable' });
+                                    }
+                                    var challengeId = Utilities.getUuid().replace(/-/g, '');
+                                    var nonce = Utilities.getUuid() + Utilities.getUuid();
+                                    CacheService.getScriptCache().put('adminChallenge_' + challengeId, partner + '|' + nonce, 180);
+                                    return jsonpResponse_(callback, { ok: true, challengeId: challengeId, nonce: nonce });
+                                  }
+                                  if (parameters.resource === 'admin_login') {
+                                    var loginPartner = String(parameters.partner || '');
+                                    var challengeId = String(parameters.challengeId || '');
+                                    var challenge = CacheService.getScriptCache().get('adminChallenge_' + challengeId);
+                                    CacheService.getScriptCache().remove('adminChallenge_' + challengeId);
+                                    var challengeParts = challenge ? challenge.split('|') : [];
+                                    var expectedProof = challengeParts.length === 2 && challengeParts[0] === loginPartner
+                                      ? hashAdminProof_(loginPartner, getAdminPassword_(loginPartner), challengeParts[1])
+                                      : '';
+                                    var receivedProof = String(parameters.proof || '');
+                                    var proofMatches = expectedProof.length === receivedProof.length;
+                                    for (var proofIndex = 0; proofIndex < Math.max(expectedProof.length, receivedProof.length); proofIndex++) {
+                                      proofMatches = (expectedProof.charCodeAt(proofIndex) || 0) === (receivedProof.charCodeAt(proofIndex) || 0) && proofMatches;
+                                    }
+                                    if (!expectedProof || !proofMatches || adminLoginLocked_(loginPartner)) {
+                                      if (loginPartner) recordAdminFailure_(loginPartner);
+                                      return jsonpResponse_(callback, { ok: false, error: 'invalid_credentials' });
+                                    }
+                                    CacheService.getScriptCache().remove('adminFailures_' + loginPartner);
+                                    var token = Utilities.getUuid() + Utilities.getUuid();
+                                    CacheService.getScriptCache().put('adminSession_' + token, loginPartner, 21600);
+                                    return jsonpResponse_(callback, { ok: true, token: token });
+                                  }
+                                  if (parameters.resource === 'admin_data') {
+                                    if (!getAdminSession_(parameters.token)) {
+                                      return jsonpResponse_(callback, { ok: false, error: 'session_expired' });
+                                    }
+                                    return jsonpResponse_(callback, { ok: true, orders: getOrderRecords_() });
+                                  }
+                                  if (parameters.resource === 'menu') {
                                     var menuSheet = getMenuConfigSheet_();
                                     var configText = menuSheet.getRange('B2').getValue();
                                     if (!configText) {
@@ -1777,23 +1972,27 @@ function doGet(e) {
                                     }
                                     return ContentService.createTextOutput(configText).setMimeType(ContentService.MimeType.JSON);
                                   }
-  var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
-  var rows = sheet.getDataRange().getValues();
-  var data = [];
-  for (var i = 1; i < rows.length; i++) {
-    if (!rows[i][0]) continue;
-    data.push({
-      id: rows[i][0], time: rows[i][1], customer: rows[i][2], phone: rows[i][3],
-      zone: rows[i][4], itemsSummary: rows[i][5], cupsCount: Number(rows[i][6]) || 0,
-      totalRM: Number(rows[i][7]) || 0, status: rows[i][8] || 'PENDING', verifiedBy: rows[i][9] || ''
-    });
-  }
-  return ContentService.createTextOutput(JSON.stringify(data)).setMimeType(ContentService.MimeType.JSON);
+  var publicOrders = getOrderRecords_().map(function(order) {
+    return {
+      id: order.id,
+      time: order.time,
+      customer: 'Pelanggan',
+      phone: '',
+      zone: order.zone,
+      itemsSummary: 'Tempahan diterima',
+      cupsCount: order.cupsCount,
+      totalRM: order.totalRM,
+      status: order.status
+    };
+  });
+  return ContentService.createTextOutput(JSON.stringify(publicOrders)).setMimeType(ContentService.MimeType.JSON);
 }
 
 function doPost(e) {
   var payload = JSON.parse(e.postData.contents);
+  var adminPartner = getAdminSession_(payload.adminToken);
   if (payload.action === 'SAVE_MENU_CONFIG') {
+    if (!adminPartner) return ContentService.createTextOutput(JSON.stringify({ ok: false, error: 'unauthorized' })).setMimeType(ContentService.MimeType.JSON);
     if (!payload.config || !Array.isArray(payload.config.customItems) || !payload.config.availability) {
       throw new Error('Invalid menu configuration');
     }
@@ -1802,16 +2001,22 @@ function doPost(e) {
     menuSheet.getRange(2, 1, 1, 2).setValues([['catalog', configText]]);
     return ContentService.createTextOutput(JSON.stringify({ ok: true })).setMimeType(ContentService.MimeType.JSON);
   }
-  var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
-  if (sheet.getLastRow() === 0) {
-    sheet.appendRow(['Order_ID', 'Masa', 'Pelanggan', 'No_Tel', 'Zon', 'Butiran_Pesanan', 'Bil_Cup', 'Jumlah_RM', 'Status', 'Disahkan_Oleh']);
-  }
+  var sheet = getOrdersSheet_();
   var rows = sheet.getDataRange().getValues();
   if (payload.action === 'UPSERT') {
     var o = payload.order;
+    if (!o || !o.id || !o.customer || !o.zone || !o.itemsSummary) {
+      return ContentService.createTextOutput(JSON.stringify({ ok: false, error: 'invalid_order' })).setMimeType(ContentService.MimeType.JSON);
+    }
     var foundRow = -1;
     for (var i = 1; i < rows.length; i++) {
       if (rows[i][0] === o.id) { foundRow = i + 1; break; }
+    }
+    if (!adminPartner && (foundRow > 0 || o.status !== 'PENDING' || o.verifiedBy)) {
+      return ContentService.createTextOutput(JSON.stringify({ ok: false, error: 'unauthorized' })).setMimeType(ContentService.MimeType.JSON);
+    }
+    if (!adminPartner && foundRow < 0 && !allowPublicOrder_()) {
+      return ContentService.createTextOutput(JSON.stringify({ ok: false, error: 'daily_limit' })).setMimeType(ContentService.MimeType.JSON);
     }
     var rowValues = [o.id, o.time, o.customer, o.phone, o.zone, o.itemsSummary, o.cupsCount, o.totalRM, o.status, o.verifiedBy || ''];
     if (foundRow > 0) {
@@ -1819,7 +2024,7 @@ function doPost(e) {
     } else {
       sheet.appendRow(rowValues);
     }
-    if (payload.sendEmail) {
+    if (payload.sendEmail && (adminPartner || foundRow < 0)) {
       var recipients = payload.notifyEmail || TARGET_RECORD_EMAILS;
       var subject = '[REKOD JUALAN] Crunchy Cup Empire #' + o.id + ' - ' + o.customer + ' (' + o.status + ')';
       var body = 'Rekod Pesanan & Jualan CRUNCHY CUP EMPIRE:\n\n'
@@ -1836,11 +2041,34 @@ function doPost(e) {
       MailApp.sendEmail(recipients, subject, body);
     }
   } else if (payload.action === 'DELETE') {
+    if (!adminPartner) return ContentService.createTextOutput(JSON.stringify({ ok: false, error: 'unauthorized' })).setMimeType(ContentService.MimeType.JSON);
     for (var j = 1; j < rows.length; j++) {
       if (rows[j][0] === payload.id) { sheet.deleteRow(j + 1); break; }
     }
+  } else {
+    return ContentService.createTextOutput(JSON.stringify({ ok: false, error: 'unknown_action' })).setMimeType(ContentService.MimeType.JSON);
   }
   return ContentService.createTextOutput(JSON.stringify({ ok: true })).setMimeType(ContentService.MimeType.JSON);
+}</textarea>
+
+function allowPublicOrder_() {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(5000);
+  try {
+    var properties = PropertiesService.getScriptProperties();
+    var today = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+    var count = properties.getProperty('PUBLIC_ORDER_USAGE_DATE') === today
+      ? Number(properties.getProperty('PUBLIC_ORDER_USAGE_COUNT')) || 0
+      : 0;
+    if (count >= PUBLIC_ORDER_DAILY_LIMIT) return false;
+    properties.setProperties({
+      PUBLIC_ORDER_USAGE_DATE: today,
+      PUBLIC_ORDER_USAGE_COUNT: String(count + 1)
+    });
+    return true;
+  } finally {
+    lock.releaseLock();
+  }
 }</textarea>
                             </div>
                         </div>
@@ -2042,6 +2270,51 @@ function doPost(e) {
         </div>
     </div>
 
+    <button type="button" onclick="switchTab('tempahan')" aria-label="Order sekarang, buka bahagian tempahan" class="fixed bottom-4 left-4 z-[70] inline-flex items-center gap-2 rounded-full bg-green-600 px-4 py-3 text-sm font-extrabold text-white shadow-xl transition hover:bg-green-700 focus:outline-none focus:ring-4 focus:ring-green-300">
+        <i class="fa-solid fa-bag-shopping"></i>
+        <span>Order Sekarang</span>
+    </button>
+
+    <section id="aiChatWindow" aria-label="Sembang CrunchyBot" class="fixed bottom-20 right-4 z-[70] hidden max-h-[70vh] w-[calc(100vw-2rem)] max-w-sm flex-col overflow-hidden rounded-3xl border-2 border-amber-300 bg-amber-50 shadow-2xl">
+        <header class="flex items-center justify-between bg-brand-brown px-4 py-3 text-white">
+            <div class="flex items-center gap-2.5">
+                <span class="flex h-9 w-9 items-center justify-center rounded-full bg-amber-400 text-lg" aria-hidden="true">🤖</span>
+                <div>
+                    <h2 class="font-display font-bold">CrunchyBot</h2>
+                    <p class="text-[11px] text-amber-100">Pembantu pelanggan</p>
+                </div>
+            </div>
+            <button type="button" onclick="toggleAIChat()" aria-label="Tutup CrunchyBot" class="rounded-full px-2.5 py-1 text-xl leading-none hover:bg-white/15">&times;</button>
+        </header>
+        <div id="aiChatMessages" aria-live="polite" class="min-h-36 flex-1 space-y-3 overflow-y-auto p-3.5">
+            <div class="flex items-start gap-2.5">
+                <div class="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-amber-400 text-xs font-bold text-brand-brown" aria-hidden="true">🤖</div>
+                <div class="max-w-[85%] rounded-2xl rounded-tl-none border border-amber-200 bg-white p-3.5 leading-relaxed text-brand-brown shadow-sm">
+                    Hai! Saya CrunchyBot. Nak tahu tentang menu, harga atau lokasi pickup? 🥣
+                </div>
+            </div>
+        </div>
+        <div class="flex flex-wrap gap-1.5 border-t border-amber-200 px-3 py-2">
+            <button type="button" onclick="askQuickQuestion('Menu dan harga')" class="rounded-full bg-white px-2.5 py-1.5 text-[11px] font-bold text-brand-brown shadow-sm hover:bg-amber-100">Menu & harga</button>
+            <button type="button" onclick="askQuickQuestion('Lokasi pickup')" class="rounded-full bg-white px-2.5 py-1.5 text-[11px] font-bold text-brand-brown shadow-sm hover:bg-amber-100">Lokasi pickup</button>
+            <button type="button" onclick="askQuickQuestion('COD dan frozen')" class="rounded-full bg-white px-2.5 py-1.5 text-[11px] font-bold text-brand-brown shadow-sm hover:bg-amber-100">COD / frozen</button>
+        </div>
+        <p class="px-3 pt-2 text-[10px] text-amber-800">Soalan bebas diproses oleh Groq AI. Jangan hantar nombor telefon atau maklumat pembayaran.</p>
+        <form onsubmit="handleAIChatSubmit(event)" class="flex items-center gap-2 border-t border-amber-200 bg-white p-3">
+            <label for="aiChatImageUpload" class="flex h-10 w-10 shrink-0 cursor-pointer items-center justify-center rounded-xl bg-amber-100 text-brand-brown hover:bg-amber-200" aria-label="Lampirkan gambar">
+                <i class="fa-solid fa-paperclip"></i>
+            </label>
+            <input id="aiChatImageUpload" type="file" accept="image/*" class="hidden" onchange="handleUserImageUpload(event)">
+            <input id="aiChatInput" type="text" maxlength="500" autocomplete="off" placeholder="Taip mesej..." class="min-w-0 flex-1 rounded-xl border border-amber-200 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-orange">
+            <button type="submit" aria-label="Hantar mesej" class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-brand-orange text-white hover:bg-orange-700">
+                <i class="fa-solid fa-paper-plane"></i>
+            </button>
+        </form>
+    </section>
+    <button id="aiChatLauncher" type="button" onclick="toggleAIChat()" aria-controls="aiChatWindow" aria-expanded="false" aria-label="Buka CrunchyBot" class="fixed bottom-4 right-4 z-[70] flex h-14 w-14 items-center justify-center rounded-full bg-brand-brown text-2xl text-amber-200 shadow-xl transition hover:bg-brand-orange focus:outline-none focus:ring-4 focus:ring-amber-300">
+        <i class="fa-solid fa-robot" aria-hidden="true"></i>
+    </button>
+
     <script>
         // --- 4. REAL-TIME SALES DATABASE & LIVE ORDER ENGINE (STARTED CLEAN AT ZERO FOR LAUNCH) ---
         let autoLiveOrderEnabled = true;
@@ -2177,7 +2450,7 @@ function doPost(e) {
 
     <script>
         // --- GOOGLE SHEETS REAL-TIME DATABASE BRIDGE (HARDCODED WEB APP URL) ---
-        const googleSheetsApiUrl = 'https://script.google.com/macros/s/AKfycbycRPtQxMORZULuc7xDSGDNHN-EOf-8b2ICoHztXOwzPplIi7hL8zecKUPQ7-J-Sq8Z/exec';
+        const googleSheetsApiUrl = 'https://script.google.com/macros/s/AKfycbwudyGTjifNXPW6-_JjGFZ6QgvtFosM4s7IInVrCMnCvd3eJJjHM52uGq29uN99JLQB/exec';
         const googleSheetsSyncIntervalMs = 30000;
         let googleSheetsSyncTimer = null;
         let googleSheetsSyncInProgress = false;
@@ -2202,6 +2475,43 @@ function doPost(e) {
             showToast('Kod Google Apps Script berjaya disalin!');
         }
 
+        function requestGoogleAppsScriptJSONP(parameters, timeoutMs = 15000) {
+            return new Promise((resolve, reject) => {
+                const callbackName = `cceChat_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+                const script = document.createElement('script');
+                const query = { ...parameters, callback: callbackName };
+                const queryString = Object.entries(query)
+                    .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(String(value))}`)
+                    .join('&');
+                let timeoutId;
+                let settled = false;
+
+                const cleanup = () => {
+                    if (settled) return;
+                    settled = true;
+                    clearTimeout(timeoutId);
+                    script.remove();
+                    delete window[callbackName];
+                };
+
+                window[callbackName] = result => {
+                    cleanup();
+                    resolve(result);
+                };
+                script.onerror = () => {
+                    cleanup();
+                    reject(new Error('Apps Script endpoint tidak dapat dicapai'));
+                };
+                timeoutId = setTimeout(() => {
+                    cleanup();
+                    reject(new Error('Masa menunggu Apps Script tamat'));
+                }, timeoutMs);
+                script.async = true;
+                script.src = `${googleSheetsApiUrl}?${queryString}`;
+                document.head.appendChild(script);
+            });
+        }
+
         async function pushOrderToGoogleSheets(orderObj, sendEmailAlert = false) {
             if (!googleSheetsApiUrl) return;
             try {
@@ -2212,6 +2522,7 @@ function doPost(e) {
                     body: JSON.stringify({
                         action: 'UPSERT',
                         order: orderObj,
+                        adminToken: adminSessionToken || '',
                         sendEmail: sendEmailAlert,
                         notifyEmail: 'CCempire26@gmail.com, m-8989637@moe-dl.edu.my'
                     })
@@ -2228,7 +2539,7 @@ function doPost(e) {
                     method: 'POST',
                     mode: 'no-cors',
                     headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-                    body: JSON.stringify({ action: 'DELETE', id: orderId })
+                    body: JSON.stringify({ action: 'DELETE', id: orderId, adminToken: adminSessionToken || '' })
                 });
             } catch (err) {
                 console.warn('Google Sheets delete notice:', err);
@@ -2243,12 +2554,16 @@ function doPost(e) {
                 if (!res.ok) throw new Error('Fetch failed');
                 const rows = await res.json();
                 if (!Array.isArray(rows)) throw new Error('Invalid Google Sheets response');
-                if (rows.length > 0) {
+                updateGoogleSheetsBadgeUI();
+                if (!currentLoggedInAdmin) {
                     salesDatabase = rows.slice().reverse();
-                    renderHeroLiveOrderCards();
-                    renderAdminDatabaseTable();
-                    updateGoogleSheetsBadgeUI();
-                    if (showFeedback) showToast(`Berjaya sync ${rows.length} rekod jualan dari Google Sheets!`);
+                }
+                renderHeroLiveOrderCards();
+                if (currentLoggedInAdmin) {
+                    await syncAdminDatabaseFromGoogleSheets(false);
+                }
+                if (showFeedback && rows.length > 0) {
+                    showToast(`Berjaya sync ${rows.length} rekod jualan dari Google Sheets!`);
                 } else if (showFeedback) {
                     showToast('Google Sheets disambung. Tiada rekod baharu lagi.');
                 }
@@ -2284,31 +2599,65 @@ function doPost(e) {
             });
         }
 
-        // --- 0. 4-PARTNER ADMIN PASSWORD PROTECTION ---
-        const PARTNER_CREDENTIALS = {
+        // --- 0. 4-PARTNER ADMIN PROFILES ---
+        const PARTNER_PROFILES = {
             syafiqah: {
                 fullName: 'Nur Syafiqah Binti Muhammad Akbar',
-                shortName: 'Nur Syafiqah (KV Lebuh Cator, Ipoh)',
-                password: 'syafiqah2026'
+                shortName: 'Nur Syafiqah (KV Lebuh Cator, Ipoh)'
             },
             juju: {
                 fullName: 'Siti Julieta Nuraishah Binti Mohd Noor',
-                shortName: 'Juju / Siti Julieta (Selangor)',
-                password: 'juju2026'
+                shortName: 'Juju / Siti Julieta (Selangor)'
             },
             aisyah: {
                 fullName: 'Aisyah Insyirah Binti Khairul Azahar',
-                shortName: 'Aisyah Insyirah (KV Lebuh Cator, Ipoh)',
-                password: 'aisyah2026'
+                shortName: 'Aisyah Insyirah (KV Lebuh Cator, Ipoh)'
             },
             qistina: {
                 fullName: 'Nur Qistina Mirza Binti Rusman',
-                shortName: 'Nur Qistina Mirza (KV Lebuh Cator, Ipoh)',
-                password: 'qistina2026'
+                shortName: 'Nur Qistina Mirza (KV Lebuh Cator, Ipoh)'
             }
         };
 
         let currentLoggedInAdmin = null;
+        let adminSessionToken = null;
+
+        async function createAdminProof(partnerKey, password, nonce) {
+            const message = new TextEncoder().encode(`${partnerKey}|${password}|${nonce}`);
+            const digest = await crypto.subtle.digest('SHA-256', message);
+            const binary = Array.from(new Uint8Array(digest), byte => String.fromCharCode(byte)).join('');
+            return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+        }
+
+        async function syncAdminDatabaseFromGoogleSheets(showError = true) {
+            if (!currentLoggedInAdmin || !adminSessionToken) return false;
+            try {
+                const result = await requestGoogleAppsScriptJSONP({
+                    resource: 'admin_data',
+                    token: adminSessionToken
+                });
+                if (result && result.error === 'session_expired') {
+                    logoutAdminSession();
+                    return false;
+                }
+                if (!result || !result.ok || !Array.isArray(result.orders)) {
+                    throw new Error(result && result.error ? result.error : 'Invalid admin data response');
+                }
+                salesDatabase = result.orders.slice().reverse();
+                renderHeroLiveOrderCards();
+                renderAdminDatabaseTable();
+                const status = document.getElementById('dbSyncStatusBadge');
+                if (status) {
+                    status.textContent = '✅ Admin DB disegerakkan';
+                    status.className = 'px-3 py-1 rounded-full bg-green-100 text-green-800 font-extrabold text-xs';
+                }
+                return true;
+            } catch (error) {
+                console.warn('Google Sheets admin sync failed:', error);
+                if (showError) showToast('Gagal sync Admin DB. Semak sambungan Google Sheets.');
+                return false;
+            }
+        }
 
         function toggleAdminPasswordVisibility() {
             const pwdInput = document.getElementById('adminPartnerPassword');
@@ -2322,37 +2671,62 @@ function doPost(e) {
             }
         }
 
-        function handlePartnerAdminLogin(event) {
+        async function handlePartnerAdminLogin(event) {
             event.preventDefault();
             const partnerKey = document.getElementById('adminPartnerSelect').value;
             const enteredPwd = document.getElementById('adminPartnerPassword').value.trim();
             const errorEl = document.getElementById('adminLoginErrorMsg');
-            const partner = PARTNER_CREDENTIALS[partnerKey];
-
-            if (partner && enteredPwd === partner.password) {
-                currentLoggedInAdmin = partner;
+            const partner = PARTNER_PROFILES[partnerKey];
+            errorEl.classList.add('hidden');
+            if (!partner || !enteredPwd) {
                 errorEl.classList.add('hidden');
+                errorEl.classList.remove('hidden');
+                return;
+            }
+            try {
+                const challenge = await requestGoogleAppsScriptJSONP({
+                    resource: 'admin_challenge',
+                    partner: partnerKey
+                });
+                if (!challenge || !challenge.ok || !challenge.challengeId || !challenge.nonce) {
+                    throw new Error('Admin login challenge failed');
+                }
+                const proof = await createAdminProof(partnerKey, enteredPwd, challenge.nonce);
+                const login = await requestGoogleAppsScriptJSONP({
+                    resource: 'admin_login',
+                    partner: partnerKey,
+                    challengeId: challenge.challengeId,
+                    proof: proof
+                });
+                if (!login || !login.ok || !login.token) throw new Error('Admin authentication failed');
+
+                currentLoggedInAdmin = partner;
+                adminSessionToken = login.token;
                 document.getElementById('adminPartnerPassword').value = '';
                 document.getElementById('adminLoginGate').classList.add('hidden');
                 document.getElementById('adminProtectedContent').classList.remove('hidden');
-
                 const badge = document.getElementById('loggedInPartnerBadge');
-                badge.innerHTML = `<i class="fa-solid fa-user-shield mr-1"></i> Admin: ${partner.shortName}`;
+                badge.textContent = `Admin: ${partner.shortName}`;
                 badge.classList.remove('hidden');
-
-                renderAdminDatabaseTable();
+                await syncAdminDatabaseFromGoogleSheets(false);
                 showToast(`Selamat datang, ${partner.fullName}! Akses Admin DB dibuka.`);
-            } else {
+            } catch (error) {
+                console.warn('Admin login failed:', error);
                 errorEl.classList.remove('hidden');
-                showToast('Kata laluan tidak sah! Sila cuba lagi.');
+                showToast('Log masuk gagal. Semak kata laluan dan tetapan Apps Script.');
             }
         }
 
         function logoutAdminSession() {
             currentLoggedInAdmin = null;
+            adminSessionToken = null;
+            salesDatabase = [];
             document.getElementById('adminProtectedContent').classList.add('hidden');
             document.getElementById('adminLoginGate').classList.remove('hidden');
             document.getElementById('loggedInPartnerBadge').classList.add('hidden');
+            renderAdminDatabaseTable();
+            renderHeroLiveOrderCards();
+            syncNowFromGoogleSheets(false);
             showToast('Anda telah log keluar daripada Admin DB.');
         }
 
@@ -2653,6 +3027,10 @@ function doPost(e) {
         }
 
         function saveMenuConfigToGoogleSheets() {
+            if (!currentLoggedInAdmin || !adminSessionToken) {
+                showToast('Log masuk Admin DB diperlukan untuk mengubah menu.');
+                return;
+            }
             if (!menuConfigLoaded) {
                 showToast('Menu belum disambungkan. Kemas kini Apps Script dahulu.');
                 return;
@@ -2662,7 +3040,11 @@ function doPost(e) {
                 method: 'POST',
                 mode: 'no-cors',
                 headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-                body: JSON.stringify({ action: 'SAVE_MENU_CONFIG', config: getMenuConfigPayload() })
+                body: JSON.stringify({
+                    action: 'SAVE_MENU_CONFIG',
+                    config: getMenuConfigPayload(),
+                    adminToken: adminSessionToken
+                })
             }).then(() => {
                 showToast('Perubahan menu dihantar ke Google Sheets.');
                 setTimeout(() => {
@@ -2900,6 +3282,10 @@ Terima kasih Crunchy Cup Empire!`;
         let orderCounterSeq = 2601;
         let liveSimulatorEnabled = false;
 
+        function createUniqueOrderId() {
+            return `CCE-${Date.now()}-${Math.floor(Math.random() * 1000000).toString().padStart(6, '0')}`;
+        }
+
         const sampleFomoCustomers = [
             { name: 'Danial Hakim', phone: '013-9182734', zone: 'KV Lebuh Cator, Ipoh', items: '2x Duo Crunch (6 Pcs - Free Sos Thai)', cups: 12, sauce: 0, total: 16.00 },
             { name: 'Nur Aina Sofea', phone: '011-62394810', zone: 'Selangor (Juju)', items: '1x Chicky Crunch (6 Pcs), 1x Add-On Sos Thai', cups: 6, sauce: 1, total: 7.50 },
@@ -3008,7 +3394,7 @@ Terima kasih Crunchy Cup Empire!`;
             if (!liveSimulatorEnabled && !manualTrigger) return;
             const pick = sampleFomoCustomers[Math.floor(Math.random() * sampleFomoCustomers.length)];
             const newOrder = {
-                id: `CCE-${orderCounterSeq++}`,
+                id: createUniqueOrderId(),
                 time: getFormattedNowTime(),
                 customer: pick.name,
                 phone: pick.phone,
@@ -3082,7 +3468,7 @@ Terima kasih Crunchy Cup Empire!`;
             const payTag = activePaymentMethod === 'qr' ? 'QR (TNG / Online Banking)' : 'Cash (Tunai)';
 
             const newRecord = {
-                id: `CCE-${orderCounterSeq++}`,
+                id: createUniqueOrderId(),
                 time: getFormattedNowTime(),
                 customer: name,
                 phone: phone,
@@ -3134,6 +3520,10 @@ Terima kasih Crunchy Cup Empire!`;
         function renderAdminDatabaseTable() {
             const tbody = document.getElementById('adminDatabaseTableBody');
             if (!tbody) return;
+            if (!currentLoggedInAdmin || !adminSessionToken) {
+                tbody.innerHTML = '';
+                return;
+            }
 
             const statusFilter = document.getElementById('dbFilterStatus').value;
             const zoneFilter = document.getElementById('dbFilterZone').value;
@@ -3245,7 +3635,7 @@ Terima kasih Crunchy Cup Empire!`;
             const payTag = activePaymentMethod === 'qr' ? 'QR (TNG / Online Banking)' : 'Cash (Tunai)';
 
             const newRecord = {
-                id: `CCE-${orderCounterSeq++}`,
+                id: createUniqueOrderId(),
                 time: getFormattedNowTime(),
                 customer: name,
                 phone: phone,
@@ -3276,6 +3666,10 @@ Terima kasih Crunchy Cup Empire!`;
 
         // Admin Confirms Payment -> Marks SUCCESS in DB + Auto-Generates Official PDF Receipt
         function confirmPaymentAndGenerateReceipt(orderId) {
+            if (!currentLoggedInAdmin || !adminSessionToken) {
+                showToast('Log masuk Admin DB diperlukan untuk mengesahkan bayaran.');
+                return;
+            }
             const target = salesDatabase.find(r => r.id === orderId);
             if (!target) return;
             target.status = 'SUCCESS';
@@ -3463,6 +3857,10 @@ Terima kasih Crunchy Cup Empire!`;
         }
 
         function deleteOrderRecord(orderId) {
+            if (!currentLoggedInAdmin || !adminSessionToken) {
+                showToast('Log masuk Admin DB diperlukan untuk memadam rekod.');
+                return;
+            }
             salesDatabase = salesDatabase.filter(r => r.id !== orderId);
             if (window.deleteOrderFromCloud) window.deleteOrderFromCloud(orderId);
             deleteOrderFromGoogleSheets(orderId);
@@ -3489,13 +3887,6 @@ Terima kasih Crunchy Cup Empire!`;
                 renderHeroLiveOrderCards();
                 showToast(`Status tempahan #${orderId} dikemas kini kepada ${target.status}.`);
             }
-        }
-
-        function deleteOrderRecord(orderId) {
-            salesDatabase = salesDatabase.filter(r => r.id !== orderId);
-            renderAdminDatabaseTable();
-            renderHeroLiveOrderCards();
-            showToast(`Rekod #${orderId} telah dipadamkan daripada senarai.`);
         }
 
         function exportSalesDatabaseCSV() {
@@ -3538,50 +3929,88 @@ Terima kasih Crunchy Cup Empire!`;
             setTimeout(() => { document.getElementById('copyMsgBtnText').textContent = 'Salin Teks Mesej'; }, 2500);
         }
 
-        // --- 5. CRUNCHYBOT AI SUPPORT (UPDATED WITH SELF-PICKUP ONLY & COD COMING SOON) ---
-        const COMMERCIAL_SYSTEM_PROMPT = `Anda ialah CrunchyBot, pembantu khidmat pelanggan AI rasmi untuk "CRUNCHY CUP EMPIRE".
-PENTING:
-1. JANGAN sesekali gunakan simbol markdown bintang dua (**teks**). Gunakan tag HTML <strong>teks</strong> untuk huruf tebal dan <br> untuk baris baharu.
-2. Senarai Produk & Harga Rasmi Terkini:
-   - <strong>Chicky Crunch (Inti Ayam)</strong>: 1 Pcs = RM 1.50 | 6 Pcs = RM 6.50 (Tidak termasuk Sos Thai)
-   - <strong>Maggie Crunch (Inti Maggie)</strong>: 1 Pcs = RM 1.00 | 6 Pcs = RM 5.50 (Tidak termasuk Sos Thai)
-   - <strong>Duo Crunch (Kombo Ayam + Maggie)</strong>: 6 Pcs = RM 8.00 (PERCUMA 1x Sos Thai!)
-   - <strong>Add-On Sos Thai</strong>: RM 1.00 (Khas untuk tambah sos bagi Chicky Crunch atau Maggie Crunch)
-3. Waktu Perniagaan: 12:00 tengah hari hingga 10:00 malam setiap hari (Open Tempahan).
-4. Kaedah Pengambilan Terkini: Buat masa sekarang HANYA <strong>Self-Pickup</strong> sahaja yang dibuka (RM 0.00). Perkhidmatan <strong>COD adalah COMING SOON (Akan Datang)</strong>.
-5. Polisi Frozen & Pos: TIADA produk frozen kerana berisiko merosakkan kerangupan kulit pangsit.
-6. Lokasi & Pengasingan Tempahan:
-   - <strong>Lokasi Tetap Self-Pickup Ipoh</strong>: Di KV Lebuh Cator, Ipoh. Hubungi Nur Syafiqah (011-2095 3490), Aisyah Insyirah (016-320 1870), atau Nur Qistina Mirza (014-622 2305).
-   - <strong>Kawasan Selangor</strong>: Pelanggan Selangor boleh terus hubungi Juju / Siti Julieta Nuraishah (011-2754 7944) untuk Self-Pickup.
-7. Media Sosial: TikTok & Instagram: <strong>@crunchycupempire</strong>.
-8. Pemilik Hak Cipta: CRUNCHY CUP EMPIRE. Penyunting Laman Web: Nur Syafiqah Muhammad Akbar.`;
+        // --- 5. CRUNCHYBOT AI SUPPORT ---
 
         function formatCleanBotHTML(rawText) {
-            return rawText
+            return String(rawText || '')
                 .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
                 .replace(/\*(.*?)\*/g, '<em>$1</em>')
                 .replace(/^- (.*)$/gm, '• $1')
                 .replace(/\n/g, '<br>');
         }
 
+        function createSafeChatFragment(html) {
+            const template = document.createElement('template');
+            template.innerHTML = html;
+            const fragment = document.createDocumentFragment();
+
+            function copyNodes(source, target) {
+                Array.from(source.childNodes).forEach(node => {
+                    if (node.nodeType === Node.TEXT_NODE) {
+                        target.appendChild(document.createTextNode(node.textContent));
+                        return;
+                    }
+                    if (node.nodeType !== Node.ELEMENT_NODE) return;
+
+                    const tag = node.tagName.toLowerCase();
+                    if (['script', 'style', 'iframe', 'object', 'svg', 'math'].includes(tag)) return;
+                    if (tag === 'img') {
+                        const src = node.getAttribute('src');
+                        if (!['chicky crunch.jfif', 'duo crunch.jfif'].includes(src)) return;
+                        const image = document.createElement('img');
+                        image.src = src;
+                        image.alt = node.getAttribute('alt') || 'Gambar menu Crunchy Cup';
+                        image.className = 'h-16 w-full rounded-lg object-cover';
+                        target.appendChild(image);
+                        return;
+                    }
+
+                    if (['strong', 'em', 'br', 'div'].includes(tag)) {
+                        const safeElement = document.createElement(tag);
+                        target.appendChild(safeElement);
+                        copyNodes(node, safeElement);
+                    } else {
+                        copyNodes(node, target);
+                    }
+                });
+            }
+
+            copyNodes(template.content, fragment);
+            return fragment;
+        }
+
         function toggleAIChat() {
             const win = document.getElementById('aiChatWindow');
+            if (!win) return;
             win.classList.toggle('hidden');
             win.classList.toggle('flex');
+            const launcher = document.getElementById('aiChatLauncher');
+            if (launcher) launcher.setAttribute('aria-expanded', String(!win.classList.contains('hidden')));
         }
 
         function appendChatMessage(sender, htmlContent) {
             const container = document.getElementById('aiChatMessages');
+            if (!container) return;
             const wrapper = document.createElement('div');
             if (sender === 'user') {
                 wrapper.className = 'flex justify-end';
-                wrapper.innerHTML = `<div class="bg-brand-orange text-white p-3 rounded-2xl rounded-tr-none shadow-sm max-w-[82%] font-medium">${htmlContent}</div>`;
+                const bubble = document.createElement('div');
+                bubble.className = 'bg-brand-orange text-white p-3 rounded-2xl rounded-tr-none shadow-sm max-w-[82%] font-medium';
+                if (htmlContent instanceof Node) {
+                    bubble.appendChild(htmlContent);
+                } else {
+                    bubble.textContent = String(htmlContent);
+                }
+                wrapper.appendChild(bubble);
             } else {
                 wrapper.className = 'flex items-start gap-2.5';
-                wrapper.innerHTML = `
-                    <div class="w-7 h-7 rounded-full bg-amber-400 text-brand-brown flex items-center justify-center font-bold text-xs shrink-0 mt-0.5">🤖</div>
-                    <div class="bg-white p-3.5 rounded-2xl rounded-tl-none shadow-sm border border-amber-200 text-brand-brown leading-relaxed max-w-[85%]">${formatCleanBotHTML(htmlContent)}</div>
-                `;
+                const avatar = document.createElement('div');
+                avatar.className = 'mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-amber-400 text-xs font-bold text-brand-brown';
+                avatar.textContent = '🤖';
+                const bubble = document.createElement('div');
+                bubble.className = 'max-w-[85%] rounded-2xl rounded-tl-none border border-amber-200 bg-white p-3.5 leading-relaxed text-brand-brown shadow-sm';
+                bubble.appendChild(createSafeChatFragment(formatCleanBotHTML(htmlContent)));
+                wrapper.append(avatar, bubble);
             }
             container.appendChild(wrapper);
             container.scrollTop = container.scrollHeight;
@@ -3592,11 +4021,16 @@ PENTING:
             if (!file) return;
             const reader = new FileReader();
             reader.onload = function(e) {
-                const imgHtml = `
-                    <p class="text-xs font-bold mb-1.5">📎 Gambar dimuat naik:</p>
-                    <img src="${e.target.result}" alt="Lampiran Pelanggan" class="rounded-xl max-h-40 w-auto object-cover border border-white/40">
-                `;
-                appendChatMessage('user', imgHtml);
+                const attachment = document.createElement('div');
+                const label = document.createElement('p');
+                label.className = 'mb-1.5 text-xs font-bold';
+                label.textContent = '📎 Gambar dimuat naik:';
+                const image = document.createElement('img');
+                image.src = typeof e.target.result === 'string' ? e.target.result : '';
+                image.alt = 'Lampiran Pelanggan';
+                image.className = 'max-h-40 w-auto rounded-xl border border-white/40 object-cover';
+                attachment.append(label, image);
+                appendChatMessage('user', attachment);
                 setTimeout(() => {
                     appendChatMessage('bot', `Terima kasih kerana menghantar gambar kepada <strong>Crunchy Cup Empire</strong>! 📸✨<br><br>Untuk tempahan pantas (12:00 tengah hari – 10:00 malam), pelanggan <strong>KV Lebuh Cator, Ipoh</strong> boleh terus WhatsApp Syafiqah (<strong>011-2095 3490</strong>), manakala pelanggan <strong>Selangor</strong> boleh terus WhatsApp Juju (<strong>011-2754 7944</strong>).`);
                 }, 600);
@@ -3647,33 +4081,24 @@ PENTING:
             return null;
         }
 
-        async function callGeminiSupport(userQuestion) {
+        function requestGroqReply(userQuestion) {
+            return requestGoogleAppsScriptJSONP({ resource: 'chat', prompt: userQuestion }, 20000)
+                .then(result => {
+                    if (result && result.ok && typeof result.reply === 'string') return result.reply;
+                    throw new Error(result && result.error ? result.error : 'Groq AI tidak tersedia');
+                });
+        }
+
+        async function callAIChatSupport(userQuestion) {
             const richVisual = getVisualBotResponse(userQuestion);
             if (richVisual) return richVisual;
 
-            const apiKey = "";
-            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${apiKey}`;
-            const payload = {
-                contents: [{ parts: [{ text: userQuestion }] }],
-                systemInstruction: { parts: [{ text: COMMERCIAL_SYSTEM_PROMPT }] }
-            };
-
             try {
-                const response = await fetch(apiUrl, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                });
-                if (response.ok) {
-                    const result = await response.json();
-                    const text = result?.candidates?.[0]?.content?.parts?.[0]?.text;
-                    if (text) return formatCleanBotHTML(text);
-                }
-            } catch (e) {
-                // Fallback below
+                return await requestGroqReply(userQuestion);
+            } catch (error) {
+                console.warn('CrunchyBot Groq request failed:', error);
+                return `Maaf, khidmat AI belum dapat dicapai. Cuba soalan pantas di atas atau WhatsApp kami untuk bantuan.`;
             }
-
-            return `Terima kasih kerana menghubungi <strong>CRUNCHY CUP EMPIRE</strong>! 🥣✨<br><br>Waktu operasi kami ialah <strong>12:00 tengah hari – 10:00 malam</strong>. Kami menawarkan <strong>Chicky Crunch</strong> (1 pcs RM1.50 / 6 pcs RM6.50), <strong>Maggie Crunch</strong> (1 pcs RM1.00 / 6 pcs RM5.50), <strong>Duo Crunch 6 pcs</strong> (RM8.00 Percuma Sos Thai), dan <strong>Add-On Sos Thai</strong> (RM1.00).`;
         }
 
         async function askQuickQuestion(qText) {
@@ -3700,14 +4125,13 @@ PENTING:
             container.appendChild(loadingDiv);
             container.scrollTop = container.scrollHeight;
 
-            const reply = await callGeminiSupport(text);
+            const reply = await callAIChatSupport(text);
             container.removeChild(loadingDiv);
             appendChatMessage('bot', reply);
         }
 
         window.addEventListener('DOMContentLoaded', () => {
             generatePreCustomMessage();
-            updateGoogleSheetsBadgeUI();
             renderHeroLiveOrderCards();
             renderAdminDatabaseTable();
             startGoogleSheetsAutoSync();
